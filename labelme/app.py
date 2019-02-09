@@ -4,8 +4,12 @@ import os
 import os.path as osp
 import re
 import webbrowser
+import xml.etree.ElementTree as ET
+
+import numpy as np
 
 import PIL.Image
+import pydicom
 
 from qtpy import QtCore
 from qtpy.QtCore import Qt
@@ -68,6 +72,7 @@ class WindowMixin(object):
 
 class MainWindow(QtWidgets.QMainWindow, WindowMixin):
     FIT_WINDOW, FIT_WIDTH, MANUAL_ZOOM = 0, 1, 2
+    DCM_LABELME_PATH = 'DCM_LABELME'
 
     def __init__(
         self,
@@ -605,6 +610,9 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
         # if self.firstStart:
         #    QWhatsThis.enterWhatsThisMode()
 
+        #PyDicom
+        self.dicom_label_file = None
+
     # Support Functions
 
     def noShapes(self):
@@ -631,6 +639,7 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
     def setDirty(self):
         if self._config['auto_save'] or self.actions.saveAuto.isChecked():
             label_file = osp.splitext(self.imagePath)[0] + '.json'
+            print('Saving JSON')
             if self.output_dir:
                 label_file = osp.join(self.output_dir, label_file)
             self.saveLabels(label_file)
@@ -717,7 +726,7 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
         self.actions.undo.setEnabled(not drawing)
         self.actions.delete.setEnabled(not drawing)
 
-    def toggleDrawMode(self, edit=True, createMode='polygon'):
+    def toggleDrawMode(self, edit=True, createMode='rectangle'):
         self.canvas.setEditing(edit)
         self.canvas.createMode = createMode
         if edit:
@@ -1264,6 +1273,10 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
         filename = None
         if self.filename is None:
             filename = self.imageList[0]
+            if self.dicom_label_file:
+                dicom_filename = self._get_dicom_label_filename()
+                if dicom_filename is not None:
+                    filename = dicom_filename
         else:
             currIndex = self.imageList.index(self.filename)
             if currIndex + 1 < len(self.imageList):
@@ -1276,6 +1289,14 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
             self.loadFile(self.filename)
 
         self._config['keep_prev'] = keep_prev
+
+    def _get_dicom_label_filename(self):
+        print(self.dicom_label_file)
+        original_dicom_filename = os.path.split(self.dicom_label_file)[1]
+        for image_path in self.imageList:
+            if original_dicom_filename in image_path:
+                return image_path
+        return None
 
     def openFile(self, _value=False):
         if not self.mayContinue():
@@ -1499,7 +1520,125 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
             self, '%s - Open Directory' % __appname__, defaultOpenDirPath,
             QtWidgets.QFileDialog.ShowDirsOnly |
             QtWidgets.QFileDialog.DontResolveSymlinks))
+
+        self.filename = None
+
+        self.dicom_label_file = None
+
+        if self.checkIfDicomFolder(dirPath=targetDirPath):
+            self.dicom_label_file = self.getAnnotatedImagePath(dirpath=targetDirPath)
+            targetDirPath = self.prepareDicomFolder(dirPath=targetDirPath)
+
         self.importDirImages(targetDirPath)
+
+    def getAnnotatedImagePath(self, dirpath):
+        xml_path = self.getAnnotationFile(dirpath=dirpath)
+        if xml_path is None:
+            return None
+        image_path = self.getAnnotatedImagePathFromAnnotationXMLPath(xml_path=xml_path)
+        dcm_image_path = os.path.join(self.DCM_LABELME_PATH, image_path)
+        return os.path.join(dirpath, dcm_image_path)
+
+    def getAnnotatedImagePathFromAnnotationXMLPath(self, xml_path):
+        xml = ET.parse(xml_path)
+        return self.getAnnotatedImagePathFromAnnotationXML(xml)
+
+    def getAnnotatedImagePathFromAnnotationXML(self, xml):
+        markup = self.get_markup_entity_from_xml(xml)
+        result = self.get_image_reference_id_from_markup(markup) + '.png'
+        return result
+
+    def get_image_reference_id_from_markup(self, markup_):
+        image_reference_id = markup_.find(
+            '{gme://caCORE.caCORE/4.4/edu.northwestern.radiology.AIM}imageReferenceUid',
+        )
+        return image_reference_id.get('root')
+
+    def get_markup_entity_from_xml(self, xml_):
+        annotations = [child for child in xml_.getroot() if 'imageAnnotations' in child.tag]
+        if len(annotations) == 0:
+            raise self.WrongXML()
+        annotation = [child for child in annotations[0] if 'ImageAnnotation' in child.tag]
+        if len(annotation) == 0:
+            raise self.WrongXML()
+        markups = [child for child in annotation[0] if 'markupEntityCollection' in child.tag]
+        if len(markups) == 0:
+            raise self.WrongXML()
+        markup = [child for child in markups[0] if 'MarkupEntity' in child.tag]
+        if len(markup) == 0:
+            raise self.WrongXML()
+        return markup[0]
+
+    def get_image_reference_id_from_markup(self, markup_):
+        image_reference_id = markup_.find(
+            '{gme://caCORE.caCORE/4.4/edu.northwestern.radiology.AIM}imageReferenceUid',
+        )
+        return image_reference_id.get('root')
+
+    class WrongXML(Exception):
+        pass
+
+    def getAnnotationFile(self, dirpath):
+        xmls = [os.path.join(root, file)
+                for root, _, files in os.walk(dirpath)
+                for file in files if file.endswith('xml')]
+        if len(xmls) == 0:
+            return None
+        return os.path.join(dirpath, xmls[0])
+
+    def checkIfDicomFolder(self, dirPath):
+        return len(self.getDicomPaths(dirPath=dirPath)) > 0
+
+    def getDicomPaths(self, dirPath):
+        try:
+            filenames = os.listdir(path=dirPath)
+        except:
+            return []
+        dcm_files = [filename for filename in filenames if filename.endswith('.dcm')]
+        return dcm_files
+
+    def prepareDicomFolder(self, dirPath, newFolderName=None):
+        dicomFolderPath = self.createDicomFolder(dirPath=dirPath, newFolderName=newFolderName)
+        self.extractDicomImages(dcmSrc=dirPath, target=dicomFolderPath)
+        return dicomFolderPath
+
+    def createDicomFolder(self, dirPath, newFolderName=None):
+        dicomFolderPath = self.getDicomFolderPath(dirPath=dirPath, newFolderName=newFolderName)
+        if not os.path.exists(path=dicomFolderPath):
+            os.mkdir(dicomFolderPath)
+        return dicomFolderPath
+
+    def getDicomFolderPath(self, dirPath, newFolderName=None):
+        newFolderName = newFolderName if newFolderName else self.DCM_LABELME_PATH
+        dicomFolderPath = os.path.join(dirPath, newFolderName)
+        return dicomFolderPath
+
+    def extractDicomImages(self, dcmSrc, target):
+        fullDicomImagesPaths = [os.path.join(dcmSrc, dcmPath) for dcmPath in self.getDicomPaths(dirPath=dcmSrc)]
+        fullImagesTargetPaths = [os.path.join(target, self.getImageTargetName(dcmPath))
+                                 for dcmPath in self.getDicomPaths(dirPath=dcmSrc)]
+        for fullDicomImagePath, fullImageTargetPath in zip(fullDicomImagesPaths, fullImagesTargetPaths):
+            self.extractDicomImage(dcmSrc=fullDicomImagePath, target=fullImageTargetPath)
+
+    @staticmethod
+    def normalize_dicom_image(image):
+        image = image / image.max()
+        image = (image * 255.0).astype(np.uint8)
+        return image
+
+    def extractDicomImage(self, dcmSrc, target):
+        dcm_object = pydicom.dcmread(dcmSrc)
+        dcmImage = dcm_object.pixel_array
+        dcmSlice = '%12.7f' % dcm_object.SliceLocation if hasattr(dcm_object, 'SliceLocation') else '0.0'
+        normalized_dcm_image = self.normalize_dicom_image(image=dcmImage)
+        dir_, path_ = os.path.split(target)
+        path_ = dcmSlice + '||' + path_
+        target = os.path.join(dir_, path_)
+        PIL.Image.fromarray(normalized_dcm_image).save(target)
+
+    def getImageTargetName(self, dcmPath, extension='.png'):
+        return dcmPath[:-4] + extension
+
 
     @property
     def imageList(self):
@@ -1517,7 +1656,6 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
             return
 
         self.lastOpenDir = dirpath
-        self.filename = None
         self.fileListWidget.clear()
         for filename in self.scanAllImages(dirpath):
             if pattern and pattern not in filename:
@@ -1546,6 +1684,11 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
                     relativePath = osp.join(root, file)
                     images.append(relativePath)
         images.sort(key=lambda x: x.lower())
+        if len(images) > 0 and '||' in images[0]:
+            try:
+                images.sort(key=lambda x: float(os.path.split(x)[1].split('||')[0]))
+            except ValueError:
+                print(images)
         return images
 
 
