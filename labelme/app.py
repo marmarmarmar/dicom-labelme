@@ -1291,7 +1291,6 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
         self._config['keep_prev'] = keep_prev
 
     def _get_dicom_label_filename(self):
-        print(self.dicom_label_file)
         original_dicom_filename = os.path.split(self.dicom_label_file)[1]
         for image_path in self.imageList:
             if original_dicom_filename in image_path:
@@ -1629,7 +1628,6 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
     def extractDicomImage(self, dcmSrc, target):
         dcm_object = pydicom.dcmread(dcmSrc)
         if dcm_object.AcquisitionNumber == 1:
-            print(dcm_object.AcquisitionNumber)
             dcmImage = dcm_object.pixel_array
             dcmSlice = '%12.7f' % dcm_object.SliceLocation if hasattr(dcm_object, 'SliceLocation') else '0.0'
             normalized_dcm_image = self.normalize_dicom_image(image=dcmImage)

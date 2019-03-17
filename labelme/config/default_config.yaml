@@ -4,7 +4,7 @@ store_data: true
 keep_prev: false
 
 flags: null
-labels: null
+labels: [tumor, marker, peritumoral region]
 file_search: null
 sort_labels: true
 validate_label: null
