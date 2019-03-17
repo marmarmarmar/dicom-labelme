@@ -1628,13 +1628,15 @@ class MainWindow(QtWidgets.QMainWindow, WindowMixin):
 
     def extractDicomImage(self, dcmSrc, target):
         dcm_object = pydicom.dcmread(dcmSrc)
-        dcmImage = dcm_object.pixel_array
-        dcmSlice = '%12.7f' % dcm_object.SliceLocation if hasattr(dcm_object, 'SliceLocation') else '0.0'
-        normalized_dcm_image = self.normalize_dicom_image(image=dcmImage)
-        dir_, path_ = os.path.split(target)
-        path_ = dcmSlice + '||' + path_
-        target = os.path.join(dir_, path_)
-        PIL.Image.fromarray(normalized_dcm_image).save(target)
+        if dcm_object.AcquisitionNumber == 1:
+            print(dcm_object.AcquisitionNumber)
+            dcmImage = dcm_object.pixel_array
+            dcmSlice = '%12.7f' % dcm_object.SliceLocation if hasattr(dcm_object, 'SliceLocation') else '0.0'
+            normalized_dcm_image = self.normalize_dicom_image(image=dcmImage)
+            dir_, path_ = os.path.split(target)
+            path_ = dcmSlice + '||' + path_
+            target = os.path.join(dir_, path_)
+            PIL.Image.fromarray(normalized_dcm_image).save(target)
 
     def getImageTargetName(self, dcmPath, extension='.png'):
         return dcmPath[:-4] + extension
